@@ -47,15 +47,15 @@ Servo servoSalang;
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
 // ── VARIABEL GLOBAL ───────────────────────────────
-int slotTerisi     = 0;
-bool palangTerbuka = false;
-volatile bool resetDarurat = false;
-bool kendaraanTerdeteksi = false;     // Status deteksi kendaraan oleh ultrasonic (mode tunggu)
-bool hitungMundurAktif = false;       // Flag hitung mundur sedang berjalan
-unsigned long waktuMulaiHitung = 0;   // Timestamp mulai hitung mundur 5 detik
-int detikTerakhir = -1;               // Untuk notifikasi per detik
-bool lampuMenyala = false;            // Status lampu parkir
-unsigned long waktuCekLDR = 0;        // Interval cek LDR
+int           slotTerisi          = 0;
+bool          palangTerbuka       = false;
+bool          kendaraanTerdeteksi = false;     // Status deteksi kendaraan oleh ultrasonic (mode tunggu)
+bool          hitungMundurAktif   = false;     // Flag hitung mundur sedang berjalan
+bool          lampuMenyala        = false;
+int           detikTerakhir       = -1;        // Untuk notifikasi per detik
+unsigned long waktuMulaiHitung    = 0;         // Timestamp mulai hitung mundur 5 detik
+unsigned long waktuCekLDR         = 0;         // Interval cek LDR
+volatile bool resetDarurat        = false;     // Status lampu parkir
 
 // ── ISR INTERRUPT ─────────────────────────────────
 void ISR_ResetDarurat() {
@@ -413,15 +413,15 @@ void prosesReset() {
   tampilkanLCD("!! RESET !!", "Sistem direset..");
   bunyikanBuzzer(5, 100);
   tutupPalang();
-  slotTerisi    = 0;
-  palangTerbuka = false;
+  slotTerisi          = 0;
+  palangTerbuka       = false;
   kendaraanTerdeteksi = false;
-  hitungMundurAktif = false;
-  waktuMulaiHitung = 0;
-  detikTerakhir = -1;
-  lampuMenyala = false;        // Reset lampu
+  hitungMundurAktif   = false;
+  waktuMulaiHitung    = 0;
+  detikTerakhir       = -1;
+  lampuMenyala        = false;          // lampu menyala
   digitalWrite(PIN_LED_KUNING, LOW);
-  digitalWrite(PIN_LED_LAMPU,  LOW);  // Matikan lampu
+  digitalWrite(PIN_LED_LAMPU,  LOW);    // lampu mati
   delay(1000);
   updateStatusSistem();
   Serial.println("Reset selesai.");

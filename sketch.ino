@@ -1,20 +1,7 @@
-//File Sketch.ino
 // ============================================================
 // SISTEM PARKIR OTOMATIS BERBASIS ARDUINO UNO
 // Mata Kuliah  : Sistem Mikrokontroler (TK244004)
 // Universitas  : Universitas Jenderal Soedirman
-// ============================================================
-// VERSI 3.6 FINAL - Perubahan oleh: APRIYUDHA (2026-04-25)
-// Perubahan:
-//   1. LED KUNING (A0): menyala saat kendaraan terdeteksi (RFID aktif)
-//   2. LED HIJAU (D8): berkedip saat kartu VALID (indikator slot tersedia)
-//   3. LED MERAH (D3): menyala saat slot penuh / kartu invalid
-//   4. Perbaikan BUG: perbandingan UID menggunakan memcmp()
-//   5. Bunyi buzzer disesuaikan per kondisi
-//   6. Palang terbuka -> trigger <=3cm -> hitung mundur mandiri 5 detik -> palang tertutup
-//   7. Serial print "Menunggu kendaraan melewati palang..."
-//   8. Sensor LDR (A1) untuk deteksi cahaya (sensor ANALOG)
-//      → Lampu parkir otomatis menyala saat malam/gelap
 // ============================================================
 
 #include <SPI.h>
@@ -30,47 +17,38 @@
 #define PIN_TRIG       5
 #define PIN_ECHO       4
 #define PIN_BUZZER     7
-#define PIN_LED_HIJAU  8    // Berkedip saat kartu VALID (slot tersedia)
-#define PIN_LED_MERAH  3    // Menyala saat slot penuh / kartu invalid
+#define PIN_LED_HIJAU  8
+#define PIN_LED_MERAH  3
 #define PIN_BUTTON     2
-#define PIN_LED_KUNING A0   // LED indikator RFID siap discan
-#define PIN_LDR        A1   // Sensor cahaya LDR (ANALOG)
-#define PIN_LED_LAMPU  A2   // Lampu parkir otomatis (OUTPUT)
 
 // ── KONFIGURASI ──────────────────────────────────
 #define KAPASITAS_SLOT  3
-#define JARAK_BATAS     120    // cm — batas deteksi kendaraan untuk scan RFID
-#define JARAK_DEKAT     3     // cm — trigger hitung mundur
-#define JEDA_TUTUP      5000  // ms — hitung mundur 5 detik
-#define AMBANG_GELAP    500   // Ambang batas LDR untuk malam
+#define JARAK_BATAS     20    // cm
 #define SERVO_BUKA      90
 #define SERVO_TUTUP     0
 
 // ── UID KARTU RFID TERDAFTAR ─────────────────────
+// Jalankan dulu, scan kartu, lihat UID di Serial Monitor
+// lalu ganti nilai di bawah ini
 const byte UID_TERDAFTAR[][4] = {
-  {0x01, 0x02, 0x03, 0x04},  // Kartu 1
-  {0x11, 0x22, 0x33, 0x44},  // Kartu 2
-  {0x55, 0x66, 0x77, 0x88}   // Kartu 3
+  {0xDE, 0xAD, 0xBE, 0xEF},  // Kartu 1 — ganti sesuai UID kartu kamu
+  {0x12, 0x34, 0x56, 0x78},  // Kartu 2
+  {0xAB, 0xCD, 0xEF, 0x01}   // Kartu 3
 };
 const int JUMLAH_KARTU = 3;
 
 // ── OBJEK ────────────────────────────────────────
 MFRC522 rfid(PIN_RFID_SS, PIN_RFID_RST);
-Servo servoPalang;
+Servo servoSalang;
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
 // ── VARIABEL GLOBAL ───────────────────────────────
 int slotTerisi     = 0;
 bool palangTerbuka = false;
 volatile bool resetDarurat = false;
-bool kendaraanTerdeteksi = false;     // Status deteksi kendaraan oleh ultrasonic (mode tunggu)
-bool hitungMundurAktif = false;       // Flag hitung mundur sedang berjalan
-unsigned long waktuMulaiHitung = 0;   // Timestamp mulai hitung mundur 5 detik
-int detikTerakhir = -1;               // Untuk notifikasi per detik
-bool lampuMenyala = false;            // Status lampu parkir
-unsigned long waktuCekLDR = 0;        // Interval cek LDR
 
 // ── ISR INTERRUPT ─────────────────────────────────
+// Dipanggil otomatis saat tombol ditekan
 void ISR_ResetDarurat() {
   resetDarurat = true;
 }
@@ -79,8 +57,9 @@ void ISR_ResetDarurat() {
 // SETUP
 // ══════════════════════════════════════════════════
 void setup() {
+  // Serial UART — untuk monitoring debug
   Serial.begin(9600);
-  Serial.println("=== SISTEM PARKIR OTOMATIS AKTIF===");
+  Serial.println("=== SISTEM PARKIR OTOMATIS ===");
 
   // GPIO pin mode
   pinMode(PIN_TRIG,      OUTPUT);
@@ -88,17 +67,9 @@ void setup() {
   pinMode(PIN_BUZZER,    OUTPUT);
   pinMode(PIN_LED_HIJAU, OUTPUT);
   pinMode(PIN_LED_MERAH, OUTPUT);
-  pinMode(PIN_BUTTON,    INPUT_PULLUP);
-  pinMode(PIN_LED_KUNING, OUTPUT);
-  pinMode(PIN_LED_LAMPU, OUTPUT);     // Lampu parkir
+  pinMode(PIN_BUTTON,    INPUT_PULLUP); // Pull-up internal, tidak perlu resistor
 
-  // Pastikan semua LED mati saat startup
-  digitalWrite(PIN_LED_KUNING, LOW);
-  digitalWrite(PIN_LED_HIJAU,  LOW);
-  digitalWrite(PIN_LED_MERAH,  LOW);
-  digitalWrite(PIN_LED_LAMPU,  LOW);  // Lampu mati saat startup
-
-  // Interrupt eksternal — D2 (INT0)
+  // Interrupt eksternal — D2 (INT0), aktif saat tombol ditekan (FALLING)
   attachInterrupt(digitalPinToInterrupt(PIN_BUTTON), ISR_ResetDarurat, FALLING);
 
   // SPI + RFID
@@ -106,9 +77,9 @@ void setup() {
   rfid.PCD_Init();
   Serial.println("RFID siap.");
 
-  // Servo
-  servoPalang.attach(PIN_SERVO);
-  servoPalang.write(SERVO_TUTUP);
+  // Servo — mulai posisi tutup
+  servoSalang.attach(PIN_SERVO);
+  servoSalang.write(SERVO_TUTUP);
   Serial.println("Servo siap.");
 
   // LCD I2C
@@ -116,9 +87,6 @@ void setup() {
   lcd.backlight();
   tampilkanLCD("Sistem Parkir", "Siap Beroperasi");
   Serial.println("LCD siap.");
-
-  // Cek kondisi cahaya saat startup
-  cekSensorLDR();
 
   delay(2000);
   updateStatusSistem();
@@ -137,104 +105,34 @@ void loop() {
     return;
   }
 
-  // Cek sensor LDR setiap 2 detik (non-blocking)
-  if (millis() - waktuCekLDR >= 2000) {
-    waktuCekLDR = millis();
-    cekSensorLDR();
-  }
-
-  // ═══════════════════════════════════════════════════
-  // JIKA PALANG TERBUKA: logika penutupan
-  // ═══════════════════════════════════════════════════
+  // ── JIKA PALANG TERBUKA: tunggu mobil lewat ──
   if (palangTerbuka) {
+    float jarak = ukurJarak();
 
-    // ── Jika hitung mundur BELUM aktif: cek sensor ──
-    if (!hitungMundurAktif) {
-      float jarak = ukurJarak();
+    Serial.print("Jarak: ");
+    Serial.print(jarak);
+    Serial.println(" cm");
 
-      Serial.print("[PALANG TERBUKA] Jarak: ");
-      Serial.print(jarak);
-      Serial.println(" cm | Menunggu kendaraan melewati palang...");
+    // Jika mobil terdeteksi lewat sensor (jarak < batas)
+    if (jarak < JARAK_BATAS && jarak > 0) {
+      delay(500); // Tunggu mobil benar-benar lewat
 
-      // Trigger: kendaraan mendekat/melewati (<= 3cm)
-      if (jarak <= JARAK_DEKAT && jarak > 0) {
-        hitungMundurAktif = true;
-        waktuMulaiHitung = millis();
-        detikTerakhir = -1;
-        Serial.println("Palang tertutup dalam 5 detik...");
-        tampilkanLCD("Kendaraan Lewat", " ");
-      }
-    }
+      tutupPalang();      // Tutup palang
+      slotTerisi++;       // Tambah jumlah slot terisi
 
-    // ── Jika hitung mundur SUDAH aktif: berjalan MANDIRI ──
-    else {
-      unsigned long waktuSekarang = millis();
-      unsigned long elapsed = waktuSekarang - waktuMulaiHitung;
-      unsigned long sisaWaktu = JEDA_TUTUP - elapsed;
-      int sisaDetik = sisaWaktu / 1000;
+      Serial.print("Mobil masuk. Slot terisi: ");
+      Serial.println(slotTerisi);
 
-      // Notifikasi hanya setiap 1 detik
-      if (sisaDetik != detikTerakhir) {
-        detikTerakhir = sisaDetik;
-
-        Serial.print("[HITUNG MUNDUR] Sisa: ");
-        Serial.println(sisaDetik);
-
-        if (sisaDetik == 0) {
-          Serial.println("[HITUNG MUNDUR] 1 detik lagi...");
-        }
-      }
-
-      // Cek apakah 5 detik sudah selesai
-      if (elapsed >= JEDA_TUTUP) {
-        Serial.println("Menutup palang...");
-        tutupPalang();
-        slotTerisi++;
-        Serial.print("Mobil masuk. Slot terisi: ");
-        Serial.println(slotTerisi);
-        updateStatusSistem();
-      }
-    }
-
-    delay(100);
-    return;
-  }
-
-  // ═══════════════════════════════════════════════════
-  // JIKA PALANG TERTUTUP: deteksi kendaraan & scan RFID
-  // ═══════════════════════════════════════════════════
-
-  float jarak = ukurJarak();
-
-  // Jika ada kendaraan terdeteksi (jarak < batas 20cm)
-  if (jarak < JARAK_BATAS && jarak > 0) {
-    if (!kendaraanTerdeteksi) {
-      kendaraanTerdeteksi = true;
-      digitalWrite(PIN_LED_KUNING, HIGH);   // Kuning nyala = RFID aktif
-      // LED hijau MATI saat kuning menyala (mode tunggu scan)
-      digitalWrite(PIN_LED_HIJAU, LOW);
-      digitalWrite(PIN_LED_MERAH, LOW);
-      tampilkanLCD("  Silahkan", "   Scan!");
-      Serial.println("Kendaraan terdeteksi. RFID aktif. Scan kartu!");
-    }
-  } else {
-    // Tidak ada kendaraan terdeteksi
-    if (kendaraanTerdeteksi) {
-      kendaraanTerdeteksi = false;
-      digitalWrite(PIN_LED_KUNING, LOW);
       updateStatusSistem();
-      Serial.println("Kendaraan tidak terdeteksi. Menunggu...");
     }
-  }
 
-  // CEK RFID HANYA JIKA ADA KENDARAAN
-  if (!kendaraanTerdeteksi) {
+    delay(100); // Interval polling sensor
     return;
   }
 
-  // CEK KARTU RFID
+  // ── JIKA PALANG TERTUTUP: cek RFID ──────────
   if (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) {
-    return;
+    return; // Tidak ada kartu — lanjut loop
   }
 
   // Kartu terdeteksi — print UID ke Serial Monitor
@@ -245,54 +143,29 @@ void loop() {
   }
   Serial.println();
 
-  // PERCABANGAN KONDISI KARTU
+  // Percabangan: cek slot dan validasi kartu
   if (slotTerisi >= KAPASITAS_SLOT) {
-    // ── SLOT PENUH ──
+    // Slot penuh — tolak masuk
     Serial.println("SLOT PENUH!");
-    tampilkanLCD("  SLOT PENUH!", " ");
-    // LED merah NYALA = slot penuh
-    digitalWrite(PIN_LED_MERAH, HIGH);
-    digitalWrite(PIN_LED_HIJAU, LOW);
-    digitalWrite(PIN_LED_KUNING, LOW);
-    bunyikanBuzzer(3, 150);
+    tampilkanLCD("  SLOT PENUH!", "Maaf, coba lagi");
+    bunyikanBuzzer(3, 100); // 3x beep cepat = ditolak
     delay(2000);
-    // Kembali ke mode tunggu scan
-    digitalWrite(PIN_LED_MERAH, LOW);
-    digitalWrite(PIN_LED_KUNING, HIGH);
-    tampilkanLCD("  Silahkan", "   Scan!");
+    updateStatusSistem();
 
   } else if (cekKartuTerdaftar(rfid.uid.uidByte, rfid.uid.size)) {
-    // ── KARTU VALID + SLOT TERSEDIA ──
+    // Kartu valid + slot tersedia — buka palang
     Serial.println("Kartu VALID. Buka palang!");
     tampilkanLCD("Akses Diterima", "Palang Terbuka..");
-    // LED hijau BERKEDIP = indikator slot tersedia
-    digitalWrite(PIN_LED_KUNING, LOW);
-    digitalWrite(PIN_LED_MERAH, LOW);
-    bunyikanBuzzer(1, 800);
-    // Berkedip 3x sebagai indikator slot tersedia
-    for (int i = 0; i < 3; i++) {
-      digitalWrite(PIN_LED_HIJAU, HIGH);
-      delay(200);
-      digitalWrite(PIN_LED_HIJAU, LOW);
-      delay(200);
-    }
-    digitalWrite(PIN_LED_HIJAU, HIGH);  // Nyala terus setelah berkedip
+    bunyikanBuzzer(1, 500); // 1x beep panjang = diterima
     bukaPalang();
 
   } else {
-    // ── KARTU TIDAK TERDAFTAR ──
+    // Kartu tidak terdaftar — tolak
     Serial.println("Kartu TIDAK TERDAFTAR!");
     tampilkanLCD("Kartu Invalid!", "Akses Ditolak");
-    // LED merah NYALA = kartu invalid
-    digitalWrite(PIN_LED_MERAH, HIGH);
-    digitalWrite(PIN_LED_HIJAU, LOW);
-    digitalWrite(PIN_LED_KUNING, LOW);
-    bunyikanBuzzer(5, 100);
+    bunyikanBuzzer(2, 300); // 2x beep = ditolak
     delay(2000);
-    // Kembali ke mode tunggu scan
-    digitalWrite(PIN_LED_MERAH, LOW);
-    digitalWrite(PIN_LED_KUNING, HIGH);
-    tampilkanLCD("  Silahkan", "   Scan!");
+    updateStatusSistem();
   }
 
   // Stop komunikasi RFID
@@ -304,29 +177,7 @@ void loop() {
 // FUNGSI-FUNGSI
 // ══════════════════════════════════════════════════
 
-// Sensor LDR — deteksi cahaya (ANALOG)
-void cekSensorLDR() {
-  int nilaiCahaya = analogRead(PIN_LDR);  // Baca sensor analog (0-1023)
-  Serial.print("[SENSOR LDR] Nilai cahaya: ");
-  Serial.println(nilaiCahaya);
-
-  if (nilaiCahaya < AMBANG_GELAP) {
-    // Malam / gelap → nyalakan lampu parkir
-    if (!lampuMenyala) {
-      lampuMenyala = true;
-      digitalWrite(PIN_LED_LAMPU, HIGH);
-      Serial.println("[SENSOR LDR] Malam terdeteksi. Lampu parkir MENYALA.");
-    }
-  } else {
-    // Siang → matikan lampu parkir
-    if (lampuMenyala) {
-      lampuMenyala = false;
-      digitalWrite(PIN_LED_LAMPU, LOW);
-      Serial.println("[SENSOR LDR] Siang terdeteksi. Lampu parkir MATI.");
-    }
-  }
-}
-
+// Ukur jarak HC-SR04 → return cm
 float ukurJarak() {
   digitalWrite(PIN_TRIG, LOW);
   delayMicroseconds(2);
@@ -338,45 +189,37 @@ float ukurJarak() {
   return (durasi * 0.0343) / 2.0;
 }
 
-// Perbaikan BUG: perbandingan UID menggunakan memcmp()
+// Cek UID kartu vs daftar terdaftar
 bool cekKartuTerdaftar(byte* uid, byte ukuranUID) {
-  if (ukuranUID != 4) return false;
-
   for (int i = 0; i < JUMLAH_KARTU; i++) {
-    if (memcmp(uid, UID_TERDAFTAR[i], 4) == 0) {
-      Serial.print("[DEBUG] Kartu cocok dengan index: ");
-      Serial.println(i);
-      return true;
+    bool cocok = true;
+    for (byte j = 0; j < 4; j++) {
+      if (uid[j] != UID_TERDAFTAR[i][j]) {
+        cocok = false;
+        break;
+      }
     }
+    if (cocok) return true;
   }
   return false;
 }
 
-// Buka palang + reset flag hitung mundur
+// Buka palang — servo ke 90 derajat (PWM)
 void bukaPalang() {
-  servoPalang.write(SERVO_BUKA);
+  servoSalang.write(SERVO_BUKA);
   palangTerbuka = true;
-  kendaraanTerdeteksi = false;
-  hitungMundurAktif = false;
-  waktuMulaiHitung = 0;
-  detikTerakhir = -1;
-  digitalWrite(PIN_LED_KUNING, LOW);
-  // LED Hijau tetap nyala (sudah dinyalakan setelah berkedip)
-  Serial.println("Palang TERBUKA. Menunggu kendaraan melewati palang...");
+  Serial.println("Palang TERBUKA.");
 }
 
-// Tutup palang + reset flag
+// Tutup palang — servo ke 0 derajat (PWM)
 void tutupPalang() {
-  servoPalang.write(SERVO_TUTUP);
+  servoSalang.write(SERVO_TUTUP);
   palangTerbuka = false;
-  hitungMundurAktif = false;
-  waktuMulaiHitung = 0;
-  detikTerakhir = -1;
-  // LED Hijau/Merah dikontrol oleh updateStatusSistem() setelah ini
   Serial.println("Palang TERTUTUP.");
   bunyikanBuzzer(2, 200);
 }
 
+// Bunyi buzzer — jumlah beep & durasi (ms)
 void bunyikanBuzzer(int jumlah, int durasi) {
   for (int i = 0; i < jumlah; i++) {
     digitalWrite(PIN_BUZZER, HIGH);
@@ -386,16 +229,17 @@ void bunyikanBuzzer(int jumlah, int durasi) {
   }
 }
 
-// Update LCD + LED sesuai status slot (sama seperti kode asli)
+// Update LCD + LED sesuai status slot
 void updateStatusSistem() {
   int slotKosong = KAPASITAS_SLOT - slotTerisi;
 
-  Serial.print("Status -> Terisi: ");
+  // UART — kirim status ke Serial Monitor
+  Serial.print("Status → Terisi: ");
   Serial.print(slotTerisi);
   Serial.print(" | Kosong: ");
   Serial.println(slotKosong);
 
-  // LED indikator — percabangan if/else (sama seperti kode asli)
+  // LED indikator — percabangan if/else
   if (slotKosong <= 0) {
     digitalWrite(PIN_LED_MERAH, HIGH);
     digitalWrite(PIN_LED_HIJAU, LOW);
@@ -412,6 +256,7 @@ void updateStatusSistem() {
   tampilkanLCD(baris1, baris2);
 }
 
+// Tampilkan 2 baris ke LCD I2C
 void tampilkanLCD(String baris1, String baris2) {
   lcd.clear();
   lcd.setCursor(0, 0);
@@ -420,7 +265,7 @@ void tampilkanLCD(String baris1, String baris2) {
   lcd.print(baris2);
 }
 
-// Reset semua flag dan LED
+// Reset darurat — dipanggil via flag dari ISR
 void prosesReset() {
   Serial.println("!!! RESET DARURAT !!!");
   tampilkanLCD("!! RESET !!", "Sistem direset..");
@@ -428,13 +273,6 @@ void prosesReset() {
   tutupPalang();
   slotTerisi    = 0;
   palangTerbuka = false;
-  kendaraanTerdeteksi = false;
-  hitungMundurAktif = false;
-  waktuMulaiHitung = 0;
-  detikTerakhir = -1;
-  lampuMenyala = false;        // Reset lampu
-  digitalWrite(PIN_LED_KUNING, LOW);
-  digitalWrite(PIN_LED_LAMPU,  LOW);  // Matikan lampu
   delay(1000);
   updateStatusSistem();
   Serial.println("Reset selesai.");

@@ -1,4 +1,4 @@
-## Project 1 Sistem Mikrokontroler | Kelompok 2
+## Project 1 Sistem Mikrokontroler 
 ###### Simulate this project on https://wokwi.com → https://wokwi.com/projects/462262710247219201
 ---
 #### Anggota:
